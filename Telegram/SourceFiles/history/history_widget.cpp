@@ -219,6 +219,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/ayu_state.h"
 #include "ayu/features/filters/filters_cache_controller.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "ayu/features/message_shot/message_shot.h"
@@ -807,7 +808,9 @@ HistoryWidget::HistoryWidget(
 		session().changes().peerUpdates(
 			Data::PeerUpdate::Flag::IsBlocked
 		) | rpl::to_empty,
-		FiltersCacheController::updates()
+		FiltersCacheController::updates(),
+		AyuSettings::getInstance().showHideButtonNearPostsChanges(
+		) | rpl::to_empty
 	) | rpl::on_next(
 		[=]
 		{
@@ -1227,6 +1230,10 @@ HistoryWidget::HistoryWidget(
 	_topBar->messageShotSelectionRequest(
 	) | rpl::on_next([=] {
 		messageShotSelected();
+	}, _topBar->lifetime());
+	_topBar->hideSelectionRequest(
+	) | rpl::on_next([=] {
+		hideSelected();
 	}, _topBar->lifetime());
 	_topBar->clearSelectionRequest(
 	) | rpl::on_next([=] {
@@ -11041,6 +11048,35 @@ void HistoryWidget::messageShotSelected() {
 	AyuFeatures::MessageShot::Wrapper(
 		_list.data(),
 		[=] { clearSelected(); });
+}
+
+void HistoryWidget::hideSelected() {
+	if (!_list || !_peer || !_peer->isChannel()) {
+		return;
+	}
+
+	const auto ids = _list->getSelectedItems();
+	if (ids.empty()) {
+		return;
+	}
+	const auto owner = &session().data();
+	auto hidden = base::flat_set<FullMsgId>();
+	for (const auto &id : ids) {
+		if (const auto item = owner->message(id)) {
+			for (const auto &groupId : owner->itemOrItsGroup(item)) {
+				hidden.emplace(groupId);
+			}
+		}
+	}
+	AyuState::setHidden(
+		&session(),
+		MessageIdsList(hidden.begin(), hidden.end()),
+		true);
+	if (_history) {
+		_history->requestChatListMessage();
+	}
+	FiltersCacheController::fireUpdate();
+	clearSelected();
 }
 
 void HistoryWidget::escape() {

@@ -131,6 +131,7 @@ TopBarWidget::TopBarWidget(
 , _sendNow(this, tr::lng_selected_send_now(), st::defaultActiveButton)
 , _delete(this, tr::lng_selected_delete(), st::defaultActiveButton)
 , _messageShot(this, tr::ayu_MessageShotTopBarText(), st::defaultActiveButton)
+, _hide(this, tr::ayu_ContextHideMessage(), st::defaultActiveButton)
 , _back(this, st::historyTopBarBack)
 , _cancelChoose(this, st::topBarCloseChoose)
 , _call(this, st::topBarCall)
@@ -149,6 +150,7 @@ TopBarWidget::TopBarWidget(
 	_sendNow->setTextTransform(Ui::RoundButtonTextTransform::ToUpper);
 	_delete->setTextTransform(Ui::RoundButtonTextTransform::ToUpper);
 	_messageShot->setTextTransform(Ui::RoundButtonTextTransform::ToUpper);
+	_hide->setTextTransform(Ui::RoundButtonTextTransform::ToUpper);
 
 	Lang::Updated(
 	) | rpl::on_next([=] {
@@ -163,6 +165,8 @@ TopBarWidget::TopBarWidget(
 	_delete->setWidthChangedCallback([=] { updateControlsGeometry(); });
 	_messageShot->setClickedCallback([=] { _messageShotSelection.fire({}); });
 	_messageShot->setWidthChangedCallback([=] { updateControlsGeometry(); });
+	_hide->setClickedCallback([=] { _hideSelection.fire({}); });
+	_hide->setWidthChangedCallback([=] { updateControlsGeometry(); });
 	_clear->setClickedCallback([=] { _clearSelection.fire({}); });
 	_call->setClickedCallback([=] { call({}); });
 	_call->setAcceptBoth(true, true);
@@ -1189,8 +1193,9 @@ void TopBarWidget::updateControlsGeometry() {
 		+ (_sendNow->isHidden() ? 0 : _sendNow->contentWidth())
 		+ (_delete->isHidden() ? 0 : _delete->contentWidth())
 		+ (_messageShot->isHidden() ? 0 : _messageShot->contentWidth())
+		+ (_hide->isHidden() ? 0 : _hide->contentWidth())
 		+ _clear->width();
-	buttonsWidth += buttonsLeft + st::topBarActionSkip * 3;
+	buttonsWidth += buttonsLeft + st::topBarActionSkip * 4;
 
 	auto widthLeft = std::min(
 		width() - buttonsWidth,
@@ -1200,6 +1205,7 @@ void TopBarWidget::updateControlsGeometry() {
 	_sendNow->setFullWidth(buttonFullWidth);
 	_delete->setFullWidth(buttonFullWidth);
 	_messageShot->setFullWidth(buttonFullWidth);
+	_hide->setFullWidth(buttonFullWidth);
 
 	selectedButtonsTop += (height() - _forward->height()) / 2;
 
@@ -1219,6 +1225,11 @@ void TopBarWidget::updateControlsGeometry() {
 	}
 
 	_messageShot->moveToLeft(buttonsLeft, selectedButtonsTop);
+	if (!_messageShot->isHidden()) {
+		buttonsLeft += _messageShot->width() + st::topBarActionSkip;
+	}
+
+	_hide->moveToLeft(buttonsLeft, selectedButtonsTop);
 	{
 		const auto large = st::topBarActionButtonLargeRadius;
 		const auto &buttonSt = st::defaultActiveButton;
@@ -1230,6 +1241,7 @@ void TopBarWidget::updateControlsGeometry() {
 			_sendNow.data(),
 			_delete.data(),
 			_messageShot.data(),
+			_hide.data(),
 		};
 		auto first = (Ui::RoundButton*)(nullptr);
 		auto last = (Ui::RoundButton*)(nullptr);
@@ -1376,6 +1388,7 @@ void TopBarWidget::updateControlsVisibility() {
 	_clear->setVisible(visible);
 	_delete->setVisible(_canDelete && visible);
 	_messageShot->setVisible(settings.showMessageShot() && visible);
+	_hide->setVisible(_canHide && visible);
 	_forward->setVisible(_canForward && visible);
 	_sendNow->setVisible(_canSendNow && visible);
 
@@ -1567,7 +1580,11 @@ bool TopBarWidget::showSelectedState() const {
 	const auto &settings = AyuSettings::getInstance();
 
 	return (_selectedCount > 0)
-		&& (_canDelete || _canForward || _canSendNow || settings.showMessageShot());
+		&& (_canDelete
+			|| _canForward
+			|| _canSendNow
+			|| _canHide
+			|| settings.showMessageShot());
 }
 
 void TopBarWidget::showSelected(SelectedState state) {
@@ -1576,11 +1593,15 @@ void TopBarWidget::showSelected(SelectedState state) {
 	auto canDelete = (state.count > 0 && state.count == state.canDeleteCount);
 	auto canForward = (state.count > 0 && state.count == state.canForwardCount);
 	auto canSendNow = (state.count > 0 && state.count == state.canSendNowCount);
-	auto count = (!canDelete && !canForward && !canSendNow && !settings.showMessageShot()) ? 0 : state.count;
+	auto canHide = (state.count > 0
+		&& _activeChat.key.peer()
+		&& _activeChat.key.peer()->isChannel());
+	auto count = (!canDelete && !canForward && !canSendNow && !canHide && !settings.showMessageShot()) ? 0 : state.count;
 	if (_selectedCount == count
 		&& _canDelete == canDelete
 		&& _canForward == canForward
-		&& _canSendNow == canSendNow) {
+		&& _canSendNow == canSendNow
+		&& _canHide == canHide) {
 		return;
 	}
 	if (count == 0) {
@@ -1588,27 +1609,32 @@ void TopBarWidget::showSelected(SelectedState state) {
 		canDelete = _canDelete;
 		canForward = _canForward;
 		canSendNow = _canSendNow;
+		canHide = _canHide;
 	}
 
 	const auto wasSelectedState = showSelectedState();
 	const auto visibilityChanged = (_canDelete != canDelete)
 		|| (_canForward != canForward)
-		|| (_canSendNow != canSendNow);
+		|| (_canSendNow != canSendNow)
+		|| (_canHide != canHide);
 	_selectedCount = count;
 	_canDelete = canDelete;
 	_canForward = canForward;
 	_canSendNow = canSendNow;
+	_canHide = canHide;
 	const auto nowSelectedState = showSelectedState();
 	if (nowSelectedState) {
 		_forward->setNumbersText(_selectedCount);
 		_sendNow->setNumbersText(_selectedCount);
 		_delete->setNumbersText(_selectedCount);
 		_messageShot->setNumbersText(_selectedCount);
+		_hide->setNumbersText(_selectedCount);
 		if (!wasSelectedState) {
-			_forward->finishNumbersAnimation();
-			_sendNow->finishNumbersAnimation();
+		_forward->finishNumbersAnimation();
+		_sendNow->finishNumbersAnimation();
 			_delete->finishNumbersAnimation();
 			_messageShot->finishNumbersAnimation();
+			_hide->finishNumbersAnimation();
 		}
 	}
 	if (visibilityChanged
