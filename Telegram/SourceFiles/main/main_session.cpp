@@ -67,6 +67,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #endif // TDESKTOP_DISABLE_SPELLCHECK
 
 // AyuGram includes
+#include "ayu/features/auto_reactions/auto_reactions.h"
 #include "ayu/ayu_settings.h"
 #include "api/api_blocked_peers.h"
 
@@ -316,6 +317,7 @@ Session::Session(
 	}, _lifetime);
 
 	InitializeBlockedPeers(this);
+	AyuFeatures::AutoReactions::Start(this);
 }
 
 void Session::appConfigRefreshed() {
