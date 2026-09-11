@@ -550,7 +550,17 @@ SendMenu::Details ShareBox::sendMenuDetails() const {
 		: SendMenu::Type::Scheduled;
 
 	// We can't support effect here because we don't have ChatHelpers::Show.
-	return { .type = type, .effectAllowed = false };
+	return {
+		.type = type,
+		.barePeerId = (selected.size() == 1)
+			? selected.front()->peer()->id.value
+			: 0,
+		.effectAllowed = false,
+		.forwardedMessagesCount = _descriptor.countMessagesCallback
+			? _descriptor.countMessagesCallback(TextWithTags())
+			: 0,
+		.forwardedPostsCount = _descriptor.forwardOptions.postsCount,
+	};
 }
 
 void ShareBox::showMenu(not_null<Ui::RpWidget*> parent) {
@@ -1853,7 +1863,31 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 			| (videoTimestamp.has_value()
 				? Flag::f_video_timestamp
 				: Flag(0));
-		const auto ranges = CollectForwardRanges(items);
+		const auto stagger = options.staggerForwardedMessages
+			&& options.scheduled > 0
+			&& options.scheduled != Api::kScheduledUntilOnlineTimestamp;
+		const auto ranges = [&] {
+			auto collected = CollectForwardRanges(items);
+			if (!stagger) {
+				return collected;
+			}
+			auto batches = std::vector<ForwardRange>();
+			for (const auto &range : collected) {
+				auto starts = HistoryView::Controls::ForwardedPostStarts(
+					range.items);
+				const auto count = int(starts.size());
+				starts.push_back(int(range.items.size()));
+				for (auto index = 0; index != count; ++index) {
+					batches.push_back({
+						.items = HistoryItemsList(
+							begin(range.items) + starts[index],
+							begin(range.items) + starts[index + 1]),
+						.fromEphemeral = range.fromEphemeral,
+					});
+				}
+			}
+			return batches;
+		}();
 		if (ranges.empty()) {
 			return;
 		}
@@ -1981,6 +2015,7 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 					}
 				}
 			};
+			auto scheduleOffset = 0;
 			for (const auto &range : ranges) {
 				const auto mtpMsgIds = ForwardRangeIds(
 					&history->session(),
@@ -2040,7 +2075,7 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 							? MTP_inputReplyToMonoForum(
 								sublistPeer->input())
 							: MTPInputReplyTo()),
-						MTP_int(options.scheduled),
+						MTP_int(options.scheduled + scheduleOffset),
 						MTP_int(options.scheduleRepeatPeriod),
 						MTP_inputPeerEmpty(),
 						Data::ShortcutIdToMTP(
@@ -2051,6 +2086,9 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 						MTP_long(starsPaid),
 						Api::SuggestToMTP(options.suggest));
 				};
+				if (stagger) {
+					scheduleOffset += options.scheduledMediaInterval;
+				}
 				const auto requestKey = ++state->nextRequestKey;
 				state->requests.insert(requestKey);
 				histories.sendPreparedMessage(
@@ -2193,6 +2231,8 @@ void FastShareMessage(
 		.filterCallback = std::move(filterCallback),
 		.st = st,
 		.forwardOptions = {
+			.postsCount = int(
+				HistoryView::Controls::ForwardedPostStarts(items).size()),
 			.sendersCount = ItemsForwardSendersCount(items),
 			.captionsCount = ItemsForwardCaptionsCount(items),
 			.show = !hasOnlyForcedForwardedInfo

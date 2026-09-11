@@ -3891,12 +3891,18 @@ void ApiWrap::forwardMessages(
 		return;
 	}
 
+	const auto scheduleInterval = action.options.staggerForwardedMessages
+		&& action.options.scheduled > 0
+		&& action.options.scheduled != Api::kScheduledUntilOnlineTimestamp
+		? action.options.scheduledMediaInterval
+		: 0;
 	auto &histories = _session->data().histories();
 
 	for (auto i = begin(draft.items); i != end(draft.items);) {
 		const auto item = *i;
 		if (item->isSavedMusicItem()) {
 			SendExistingDocument(MessageToSend(action), item->media()->document());
+			action.options.scheduled += scheduleInterval;
 			i = draft.items.erase(i);
 		} else {
 			++i;
@@ -3996,6 +4002,7 @@ void ApiWrap::forwardMessages(
 	}
 
 	auto forwardFrom = collected.front().items.front()->history()->peer;
+	auto forwardGroup = collected.front().items.front()->groupId();
 	auto fromEphemeral = false;
 	auto ids = QVector<MTPint>();
 	auto randomIds = QVector<MTPlong>();
@@ -4137,16 +4144,22 @@ void ApiWrap::forwardMessages(
 				localIds->emplace(randomId, newId);
 			}
 			const auto newFrom = item->history()->peer;
-			if (forwardFrom != newFrom) {
+			const auto newGroup = item->groupId();
+			const auto nextPost = !newGroup || newGroup != forwardGroup;
+			if (!ids.empty()
+				&& (forwardFrom != newFrom || (scheduleInterval && nextPost))) {
 				sendAccumulated();
-				forwardFrom = newFrom;
+				action.options.scheduled += scheduleInterval;
 			}
+			forwardFrom = newFrom;
+			forwardGroup = newGroup;
 			ids.push_back(range.fromEphemeral
 				? MTP_int(_session->ephemeralMessages().lookupId(item))
 				: MTP_int(item->id));
 			randomIds.push_back(MTP_long(randomId));
 		}
 		sendAccumulated();
+		action.options.scheduled += scheduleInterval;
 	}
 	_session->data().sendHistoryChangeNotifications();
 }
@@ -4347,16 +4360,22 @@ void ApiWrap::sendFiles(
 		&& ranges::any_of(list.files, &Ui::PreparedFile::ttlSeconds)) {
 		album = nullptr;
 	}
-	const auto to = FileLoadTaskOptions(action);
+	const auto baseTo = FileLoadTaskOptions(action);
 	const auto animationAsGif = !Data::RestrictionError(
 		action.history->peer,
 		ChatRestriction::SendGifs);
 	if (album) {
-		album->options = to.options;
+		album->options = baseTo.options;
 	}
 	auto tasks = std::vector<std::unique_ptr<Task>>();
 	tasks.reserve(list.files.size());
 	for (auto &file : list.files) {
+		auto to = baseTo;
+		if (!album
+			&& to.options.scheduled > 0
+			&& to.options.scheduled != Api::kScheduledUntilOnlineTimestamp) {
+			to.options.scheduled += file.scheduleOffset;
+		}
 		const auto uploadWithType = !album
 			? type
 			: (file.type == Ui::PreparedFile::Type::Photo
