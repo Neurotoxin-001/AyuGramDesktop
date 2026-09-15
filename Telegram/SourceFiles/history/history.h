@@ -229,6 +229,7 @@ public:
 
 	[[nodiscard]] bool trackUnreadMessages() const;
 	[[nodiscard]] int unreadCount() const;
+	void scheduleFilteredUnreadCountUpdate();
 	[[nodiscard]] bool unreadCountKnown() const;
 
 	// Some old unread count is known, but we read history till some place.
@@ -648,6 +649,7 @@ private:
 	void hasUnreadReactionChanged(bool has) override;
 	void hasUnreadPollVoteChanged(bool has) override;
 	[[nodiscard]] bool useMyUnreadInParent() const;
+	[[nodiscard]] int countFilteredUnreadMessages();
 
 	const std::unique_ptr<HistoryMainElementDelegateMixin> _delegateMixin;
 
@@ -668,6 +670,8 @@ private:
 	std::optional<MsgId> _inboxReadBefore;
 	std::optional<MsgId> _outboxReadBefore;
 	std::optional<int> _unreadCount;
+	int _filteredUnreadCount = 0;
+	bool _filteredUnreadUpdateScheduled = false;
 	int _unreadPollVotesCount = 0;
 	rpl::event_stream<int> _unreadPollVotesCountChanges;
 	std::optional<HistoryItem*> _lastMessage;
@@ -706,7 +710,7 @@ private:
 	QString _topPromotedType;
 
 	HistoryView::SendActionPainter _sendActionPainter;
-
+	rpl::lifetime _filtersLifetime;
 
 };
 

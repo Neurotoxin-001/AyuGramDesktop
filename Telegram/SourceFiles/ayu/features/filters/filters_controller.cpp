@@ -209,6 +209,7 @@ void toggleFilteredMessagesShown(not_null<PeerData*> peer) {
 }
 
 void invalidate(not_null<HistoryItem*> item) {
+	item->history()->scheduleFilteredUnreadCountUpdate();
 	const auto &settings = AyuSettings::getInstance();
 	if (!settings.filtersEnabled()) {
 		return;
