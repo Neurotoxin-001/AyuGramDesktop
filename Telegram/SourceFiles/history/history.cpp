@@ -87,6 +87,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ayu_settings.h"
 #include "ayu/ayu_state.h"
+#include "ayu/features/filters/filters_cache_controller.h"
+#include "ayu/features/filters/filters_controller.h"
 
 
 namespace {
@@ -182,6 +184,16 @@ History::History(not_null<Data::Session*> owner, PeerId peerId)
 		}
 	}
 	updateCommunityRegistration();
+	rpl::merge(
+		FiltersCacheController::updates(),
+		AyuSettings::getInstance().filtersEnabledChanges() | rpl::to_empty,
+		AyuSettings::getInstance().filtersEnabledInChatsChanges() | rpl::to_empty,
+		AyuSettings::getInstance().hideFromBlockedChanges() | rpl::to_empty,
+		session().changes().peerUpdates(
+			Data::PeerUpdate::Flag::IsBlocked) | rpl::to_empty
+	) | rpl::on_next([=] {
+		scheduleFilteredUnreadCountUpdate();
+	}, _filtersLifetime);
 }
 
 History::~History() = default;
@@ -678,6 +690,7 @@ not_null<HistoryItem*> History::insertItem(
 
 	const auto result = i->get();
 	owner().registerMessage(result);
+	scheduleFilteredUnreadCountUpdate();
 
 	Ensures(ok);
 	return result;
@@ -724,6 +737,7 @@ void History::destroyMessage(not_null<HistoryItem*> item) {
 	if (i != end(_items)) {
 		_items.erase(i);
 	}
+	scheduleFilteredUnreadCountUpdate();
 
 	if (documentToCancel) {
 		session().data().documentMessageRemoved(documentToCancel);
@@ -2295,6 +2309,40 @@ int History::unreadCount() const {
 	return _unreadCount ? *_unreadCount : 0;
 }
 
+int History::countFilteredUnreadMessages() {
+	if (!unreadCount()
+		|| !inboxReadTillKnown()
+		|| !AyuSettings::getInstance().filtersEnabled()) {
+		return 0;
+	}
+	auto result = 0;
+	for (const auto &item : _items) {
+		if (item->isRegular()
+			&& !item->out()
+			&& item->unread(this)
+			&& FiltersController::filtered(item.get())) {
+			++result;
+		}
+	}
+	return std::min(result, unreadCount());
+}
+
+void History::scheduleFilteredUnreadCountUpdate() {
+	if (_filteredUnreadUpdateScheduled) {
+		return;
+	}
+	_filteredUnreadUpdateScheduled = true;
+	crl::on_main(this, [=] {
+		_filteredUnreadUpdateScheduled = false;
+		const auto count = countFilteredUnreadMessages();
+		if (_filteredUnreadCount == count) {
+			return;
+		}
+		const auto notifier = unreadStateChangeNotifier(useMyUnreadInParent());
+		_filteredUnreadCount = count;
+	});
+}
+
 bool History::unreadCountKnown() const {
 	return _unreadCount.has_value();
 }
@@ -2338,6 +2386,7 @@ void History::setUnreadCount(int newUnreadCount) {
 	} else if (!_firstUnreadView && !_unreadBarView && loadedAtBottom()) {
 		calculateFirstUnreadMessage();
 	}
+	_filteredUnreadCount = countFilteredUnreadMessages();
 	if (isLinkedCommunityMember()) {
 		_communityInfo->oneUnreadStateChanged();
 	}
@@ -2351,7 +2400,7 @@ void History::setUnreadMark(bool unread) {
 		return;
 	}
 	const auto notifier = unreadStateChangeNotifier(
-		useMyUnreadInParent() && !unreadCount());
+		useMyUnreadInParent() && unreadCount() <= _filteredUnreadCount);
 	Thread::setUnreadMarkFlag(unread);
 	if (isLinkedCommunityMember()) {
 		_communityInfo->oneUnreadStateChanged();
@@ -2826,7 +2875,7 @@ Dialogs::BadgesState History::adjustBadgesStateByFolder(
 
 Dialogs::UnreadState History::computeUnreadState() const {
 	auto result = Dialogs::UnreadState();
-	const auto count = _unreadCount.value_or(0);
+	const auto count = std::max(unreadCount() - _filteredUnreadCount, 0);
 	const auto mark = !count && unreadMark();
 	const auto muted = this->muted();
 	result.messages = count;
@@ -3781,6 +3830,7 @@ void History::validateMonoAndForumUnread(MsgId readTillId) {
 }
 
 void History::setInboxReadTill(MsgId upTo) {
+	scheduleFilteredUnreadCountUpdate();
 	if (_inboxReadBefore) {
 		tryMarkForumIntervalRead(*_inboxReadBefore, upTo + 1);
 		tryMarkMonoforumIntervalRead(*_inboxReadBefore, upTo + 1);
