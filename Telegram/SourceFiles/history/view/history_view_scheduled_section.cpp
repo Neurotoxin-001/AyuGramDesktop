@@ -1476,6 +1476,7 @@ rpl::producer<Data::MessagesSlice> ScheduledWidget::listSource(
 			? session->scheduledMessages().list(_forumTopic)
 			: session->scheduledMessages().list(_history);
 	}) | rpl::after_next([=](const Data::MessagesSlice &slice) {
+		_topBar->setScheduledMessagesCount(int(slice.ids.size()));
 		highlightSingleNewMessage(slice);
 	});
 }
