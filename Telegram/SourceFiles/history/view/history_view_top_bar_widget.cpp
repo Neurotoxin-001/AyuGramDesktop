@@ -653,6 +653,13 @@ void TopBarWidget::paintTopBar(Painter &p) {
 			: peer->isVerifyCodes()
 			? tr::lng_verification_codes(tr::now)
 			: peer->name();
+		if (_activeChat.section == Section::Scheduled) {
+			const auto counter = u" (%1)"_q.arg(_scheduledMessagesCount);
+			text = st::historySavedFont->elided(
+				text,
+				std::max(namewidth - st::historySavedFont->width(counter), 0))
+				+ counter;
+		}
 		const auto opacity = folder ? _titleShownRatio : 1.;
 		if (opacity > 0.) {
 			const auto textWidth = st::historySavedFont->width(text);
@@ -1050,6 +1057,13 @@ void TopBarWidget::handleEmojiInteractionSeen(const QString &emoticon) {
 void TopBarWidget::setCustomTitle(const QString &title) {
 	if (_customTitleText != title) {
 		_customTitleText = title;
+		update();
+	}
+}
+
+void TopBarWidget::setScheduledMessagesCount(int count) {
+	if (_scheduledMessagesCount != count) {
+		_scheduledMessagesCount = count;
 		update();
 	}
 }

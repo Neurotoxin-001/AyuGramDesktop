@@ -83,6 +83,7 @@ public:
 		ActiveChat activeChat,
 		SendActionPainter *sendAction);
 	void setCustomTitle(const QString &title);
+	void setScheduledMessagesCount(int count);
 	void setTitleShownRatio(float64 shown);
 	[[nodiscard]] int titleLeft() const;
 
@@ -230,6 +231,7 @@ private:
 	int _titleNameVersion = 0;
 
 	int _selectedCount = 0;
+	int _scheduledMessagesCount = 0;
 	bool _canDelete = false;
 	bool _canForward = false;
 	bool _canSendNow = false;
