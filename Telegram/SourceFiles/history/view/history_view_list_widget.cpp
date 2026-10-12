@@ -88,6 +88,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/crash_reports.h"
 #include "data/components/sponsored_messages.h"
 #include "data/data_session.h"
+#include "data/data_chat_filters.h"
+#include "ayu/ayu_state.h"
+#include "base/timer_rpl.h"
 #include "data/data_changes.h"
 #include "data/data_folder.h"
 #include "data/data_media_types.h"
@@ -669,6 +672,14 @@ ListWidget::ListWidget(
 			Data::PeerUpdate::Flag::IsBlocked
 		) | rpl::to_empty,
 		FiltersCacheController::updates(),
+		base::timer_each(60 * crl::time(1000)) | rpl::filter([=] {
+			return isVisible() && ranges::any_of(_items, [=](const auto &view) {
+				const auto peer = view->data()->history()->peer;
+				return peer->isBroadcast()
+					&& AyuState::repostFilterEnabled(_session, peer->id);
+			});
+		}),
+		_session->data().chatsFilters().changed(),
 		AyuSettings::getInstance().showHideButtonNearPostsChanges(
 		) | rpl::to_empty
 	) | rpl::on_next([=] {

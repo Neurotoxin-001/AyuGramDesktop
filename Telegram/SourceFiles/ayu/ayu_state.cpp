@@ -8,9 +8,15 @@
 
 #include "ayu/libs/json.hpp"
 #include "ayu/ayu_settings.h"
+#include "ayu/features/filters/filters_cache_controller.h"
+#include "base/unixtime.h"
 #include "core/application.h"
+#include "data/data_chat_filters.h"
+#include "data/data_groups.h"
+#include "data/data_session.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "history/history_item_components.h"
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
@@ -32,6 +38,7 @@ using json = nlohmann::json;
 using AccountId = uint64;
 
 constexpr auto kFormatVersion = 2;
+constexpr auto kRepostFilterGraceSeconds = 60 * 60;
 
 struct AccountState {
 	HiddenMessages hidden;
@@ -40,6 +47,7 @@ struct AccountState {
 };
 
 std::unordered_map<AccountId, AccountState> AccountStates;
+std::unordered_map<AccountId, RepostFilter> RepostFilters;
 std::optional<HiddenMessages> PendingLegacy;
 std::unordered_set<AccountId> LegacySeededAccounts;
 Main::Session *DisableGhostModeOnStoryCloseSession = nullptr;
@@ -98,6 +106,29 @@ Main::Session *DisableGhostModeOnStoryCloseSession = nullptr;
 	return result;
 }
 
+[[nodiscard]] std::unordered_set<FilterId> ParseFolderIds(const json &value) {
+	auto result = std::unordered_set<FilterId>();
+	if (!value.is_array()) {
+		return result;
+	}
+	for (const auto &id : value) {
+		if (!id.is_number_integer()) {
+			continue;
+		}
+		const auto bare = id.get<int64>();
+		if (bare > 0 && bare <= std::numeric_limits<FilterId>::max()) {
+			result.insert(FilterId(bare));
+		}
+	}
+	return result;
+}
+
+[[nodiscard]] json SerializeFolderIds(const std::unordered_set<FilterId> &ids) {
+	auto sorted = std::vector<FilterId>(ids.begin(), ids.end());
+	std::sort(sorted.begin(), sorted.end());
+	return sorted;
+}
+
 [[nodiscard]] json SerializeState() {
 	auto accounts = json::object();
 	for (const auto &[accountId, state] : AccountStates) {
@@ -118,7 +149,25 @@ Main::Session *DisableGhostModeOnStoryCloseSession = nullptr;
 			accounts[std::to_string(accountId)] = std::move(peers);
 		}
 	}
+	auto filters = json::object();
+	for (const auto &[accountId, filter] : RepostFilters) {
+		auto channels = json::object();
+		for (const auto &[peerId, enabled] : filter.channels) {
+			channels[std::to_string(peerId.value)] = enabled;
+		}
+		filters[std::to_string(accountId)] = json::object({
+			{ "paused", filter.paused },
+			{ "all", filter.enabledAll },
+			{ "only_folders", filter.onlyFolders },
+			{ "included_folders", SerializeFolderIds(filter.includedFolders) },
+			{ "excluded_folders", SerializeFolderIds(filter.excludedFolders) },
+			{ "channels", std::move(channels) },
+			{ "percent", filter.percent },
+			{ "days", filter.days },
+		});
+	}
 	return json::object({
+		{ "repost_filters", std::move(filters) },
 		{ "version", kFormatVersion },
 		{ "accounts", std::move(accounts) },
 	});
@@ -197,6 +246,7 @@ void SeedAllLegacyAccounts() {
 } // namespace
 
 void load() {
+	RepostFilters.clear();
 	auto file = QFile(StatePath());
 	if (!file.open(QIODevice::ReadOnly)) {
 		AccountStates.clear();
@@ -246,6 +296,42 @@ void load() {
 			}
 			legacy = std::move(hidden);
 		}
+		auto filters = std::unordered_map<AccountId, RepostFilter>();
+		if (root.contains("repost_filters")
+			&& root.at("repost_filters").is_object()) {
+			for (const auto &[key, value] : root.at("repost_filters").items()) {
+				const auto accountId = ParseKey(key);
+				if (!accountId || !value.is_object()) {
+					continue;
+				}
+				try {
+					auto filter = RepostFilter();
+					filter.paused = value.value("paused", false);
+					filter.enabledAll = value.value("all", false);
+					filter.onlyFolders = value.value("only_folders", false);
+					filter.includedFolders = ParseFolderIds(
+						value.value("included_folders", json::array()));
+					filter.excludedFolders = ParseFolderIds(
+						value.value("excluded_folders", json::array()));
+					filter.percent = std::clamp(value.value("percent", 2), 1, 100);
+					filter.days = std::clamp(value.value("days", 7), 1, 365);
+					if (value.contains("channels") && value.at("channels").is_object()) {
+						for (const auto &[peerKey, enabled] : value.at("channels").items()) {
+							const auto peerId = ParseKey(peerKey);
+							if (peerId && enabled.is_boolean()) {
+								filter.channels.emplace(
+									PeerId(PeerIdHelper(*peerId)),
+									enabled.get<bool>());
+							}
+						}
+					}
+					filters.emplace(*accountId, std::move(filter));
+				} catch (...) {
+					LOG(("AyuState: invalid repost filter settings."));
+				}
+			}
+		}
+		RepostFilters = std::move(filters);
 		AccountStates = std::move(loaded);
 		PendingLegacy = std::move(legacy);
 		LegacySeededAccounts.clear();
@@ -370,7 +456,86 @@ bool hasHiddenFlag(not_null<HistoryItem*> item) {
 	return messages && messages->contains(item->id);
 }
 
+RepostFilter repostFilter(not_null<Main::Session*> session) {
+	const auto i = RepostFilters.find(session->uniqueId());
+	return (i != RepostFilters.end()) ? i->second : RepostFilter();
+}
+
+bool repostFilterEnabled(not_null<Main::Session*> session, PeerId peerId) {
+	const auto i = RepostFilters.find(session->uniqueId());
+	if (i == RepostFilters.end()) {
+		return false;
+	}
+	const auto &filter = i->second;
+	if (filter.paused) {
+		return false;
+	}
+	const auto channel = filter.channels.find(peerId);
+	if (channel != filter.channels.end() && !channel->second) {
+		return false;
+	}
+	auto included = false;
+	if (const auto history = session->data().historyLoaded(peerId)) {
+		for (const auto &folder : session->data().chatsFilters().list()) {
+			const auto id = folder.id();
+			if (!id
+				|| (!filter.includedFolders.contains(id)
+					&& !filter.excludedFolders.contains(id))
+				|| !folder.contains(history)) {
+				continue;
+			}
+			if (filter.excludedFolders.contains(id)) {
+				return false;
+			}
+			included = true;
+		}
+	}
+	return filter.onlyFolders
+		? included
+		: (included || filter.enabledAll || channel != filter.channels.end());
+}
+
+void setRepostFilter(not_null<Main::Session*> session, RepostFilter filter) {
+	filter.percent = std::clamp(filter.percent, 1, 100);
+	filter.days = std::clamp(filter.days, 1, 365);
+	RepostFilters[session->uniqueId()] = std::move(filter);
+	Save();
+	FiltersCacheController::fireUpdate();
+}
+
+bool isRepostFiltered(not_null<HistoryItem*> item) {
+	const auto history = item->history();
+	if (!history->peer->isBroadcast()
+		|| !item->isHistoryEntry()
+		|| item->isService()
+		|| item->isLocal()
+		|| !repostFilterEnabled(&history->session(), history->peer->id)) {
+		return false;
+	}
+	const auto &filter = RepostFilters.at(history->session().uniqueId());
+	const auto now = int64(base::unixtime::now());
+	const auto cutoff = now - int64(filter.days) * 86400;
+	const auto newestAllowed = now - kRepostFilterGraceSeconds;
+	const auto matches = [&](not_null<HistoryItem*> post) {
+		const auto views = post->Get<HistoryMessageViews>();
+		return int64(post->date()) > cutoff
+			&& int64(post->date()) <= newestAllowed
+			&& views
+			&& views->views.count > 0
+			&& views->forwardsCount >= 0
+			&& int64(views->forwardsCount) * 100
+				< int64(views->views.count) * filter.percent;
+	};
+	if (const auto group = history->owner().groups().find(item)) {
+		return std::any_of(group->items.begin(), group->items.end(), matches);
+	}
+	return matches(item);
+}
+
 bool isHidden(not_null<HistoryItem*> item) {
+	if (isRepostFiltered(item)) {
+		return true;
+	}
 	const auto history = item->history();
 	const auto peerId = history->peer->id;
 	const auto state = FindAccount(&history->session());

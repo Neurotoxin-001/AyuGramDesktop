@@ -29,6 +29,8 @@
 #include "base/unixtime.h"
 #include "core/mime_type.h"
 #include "data/data_channel.h"
+#include "data/data_chat_filters.h"
+#include "boxes/peer_list_controllers.h"
 #include "data/data_chat.h"
 #include "data/data_forum_topic.h"
 #include "data/data_search_controller.h"
@@ -42,16 +44,208 @@
 #include "main/session/send_as_peers.h"
 #include "styles/style_ayu_icons.h"
 #include "styles/style_layers.h"
+#include "styles/style_boxes.h"
 #include "styles/style_menu_icons.h"
 #include "ui/boxes/confirm_box.h"
+#include "ui/layers/generic_box.h"
+#include "ui/widgets/fields/number_input.h"
+#include "ui/widgets/labels.h"
+#include "ui/widgets/checkbox.h"
+#include "ui/wrap/padding_wrap.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "window/window_peer_menu.h"
 #include "window/window_session_controller.h"
 
+#include <algorithm>
+
 namespace AyuUi {
 
 namespace {
+
+class RepostExceptionsController final : public ChatsListBoxController {
+public:
+	explicit RepostExceptionsController(not_null<Main::Session*> session)
+	: ChatsListBoxController(session)
+	, _session(session) {
+	}
+
+	Main::Session &session() const override {
+		return *_session;
+	}
+
+	void rowClicked(not_null<PeerListRow*> row) override {
+		delegate()->peerListSetRowChecked(row, !row->checked());
+	}
+
+protected:
+	void prepareViewHook() override {
+		auto selected = std::vector<not_null<PeerData*>>();
+		for (const auto &[peerId, enabled] : AyuState::repostFilter(_session).channels) {
+			if (!enabled) {
+				const auto peer = _session->data().peer(peerId);
+				if (peer->isBroadcast()) {
+					selected.push_back(peer);
+				}
+			}
+		}
+		delegate()->peerListAddSelectedPeers(selected);
+	}
+
+	std::unique_ptr<Row> createRow(not_null<History*> history) override {
+		return history->peer->isBroadcast() ? std::make_unique<Row>(history) : nullptr;
+	}
+
+private:
+	const not_null<Main::Session*> _session;
+
+};
+
+class RepostFilterCheckbox final : public Ui::Checkbox {
+public:
+	RepostFilterCheckbox(QWidget *parent, const QString &text, bool checked)
+	: Ui::Checkbox(parent, text, checked, st::defaultBoxCheckbox) {
+		setAllowTextLines();
+	}
+
+protected:
+	QPoint prepareRippleStartPosition() const override {
+		return DisabledRippleStartPosition();
+	}
+
+};
+
+void RepostFilterSettingsBox(
+		not_null<Ui::GenericBox*> box,
+		not_null<Main::Session*> session) {
+	const auto filter = AyuState::repostFilter(session);
+	const auto addNumberInput = [&](
+			rpl::producer<QString> placeholder,
+			int value,
+			int limit) {
+		const auto wrap = box->addRow(object_ptr<Ui::FixedHeightWidget>(
+			box,
+			st::defaultInputField.heightMin));
+		const auto field = Ui::CreateChild<Ui::NumberInput>(
+			wrap,
+			st::defaultInputField,
+			std::move(placeholder),
+			QString::number(value),
+			limit);
+		wrap->widthValue() | rpl::on_next([=](int width) {
+			field->resize(width, field->height());
+		}, wrap->lifetime());
+		return field;
+	};
+	box->setTitle(rpl::single(u"Фильтрация постов по репостам"_q));
+	box->setWidth(st::boxWideWidth * 3 / 2);
+	box->setMaxHeight(st::boxMaxListHeight);
+	const auto active = box->addRow(object_ptr<RepostFilterCheckbox>(
+		box,
+		u"Фильтрация включена"_q,
+		!filter.paused));
+	box->addRow(object_ptr<Ui::FlatLabel>(
+		box,
+		rpl::single(u"Скрывать посты с долей репостов ниже порога спустя 60 минут после публикации. Посты старше указанного срока остаются видимыми."_q),
+		st::boxLabel));
+	box->addRow(object_ptr<Ui::FlatLabel>(
+		box,
+		rpl::single(u"Порог репостов, % (1–100)"_q),
+		st::boxLabel));
+	const auto percent = addNumberInput(
+		rpl::single(u"Процент репостов"_q),
+		filter.percent,
+		100);
+	box->addRow(object_ptr<Ui::FlatLabel>(
+		box,
+		rpl::single(u"Возраст постов в днях (1–365)"_q),
+		st::boxLabel));
+	const auto days = addNumberInput(
+		rpl::single(u"Количество дней"_q),
+		filter.days,
+		365);
+	const auto onlyFolders = box->addRow(object_ptr<RepostFilterCheckbox>(
+		box,
+		u"Только выбранные папки"_q,
+		filter.onlyFolders));
+	box->addRow(object_ptr<Ui::FlatLabel>(
+		box,
+		rpl::single(u"Выберите папки для фильтрации или исключения. Исключения имеют приоритет. Новые каналы в папке учитываются автоматически."_q),
+		st::boxLabel));
+	struct FolderSelection {
+		FilterId id = 0;
+		Ui::Checkbox *included = nullptr;
+		Ui::Checkbox *excluded = nullptr;
+	};
+	auto folders = std::vector<FolderSelection>();
+	for (const auto &folder : session->data().chatsFilters().list()) {
+		if (!folder.id()) {
+			continue;
+		}
+		box->addSkip(st::defaultCheck.diameter / 2);
+		const auto title = folder.titleText().text;
+		const auto included = box->addRow(object_ptr<RepostFilterCheckbox>(
+			box,
+			u"Включить: %1"_q.arg(title),
+			filter.includedFolders.contains(folder.id())));
+		const auto excluded = box->addRow(object_ptr<RepostFilterCheckbox>(
+			box,
+			u"Исключить: %1"_q.arg(title),
+			filter.excludedFolders.contains(folder.id())));
+		included->checkedChanges() | rpl::on_next([=](bool checked) {
+			if (checked) {
+				excluded->setChecked(false);
+			}
+		}, box->lifetime());
+		excluded->checkedChanges() | rpl::on_next([=](bool checked) {
+			if (checked) {
+				included->setChecked(false);
+			}
+		}, box->lifetime());
+		folders.push_back({ folder.id(), included, excluded });
+	}
+	const auto error = box->addRow(object_ptr<Ui::FlatLabel>(box, st::boxLabel));
+	error->setTextColorOverride(st::boxTextFgError->c);
+	const auto save = [=] {
+		const auto percentValue = percent->getLastText().toInt();
+		const auto daysValue = days->getLastText().toInt();
+		if (percentValue < 1 || percentValue > 100) {
+			percent->showError();
+			return;
+		}
+		if (daysValue < 1 || daysValue > 365) {
+			days->showError();
+			return;
+		}
+		auto updated = AyuState::repostFilter(session);
+		updated.paused = !active->checked();
+		updated.percent = percentValue;
+		updated.days = daysValue;
+		updated.onlyFolders = onlyFolders->checked();
+		updated.includedFolders.clear();
+		updated.excludedFolders.clear();
+		for (const auto &folder : folders) {
+			if (folder.included->checked()) {
+				updated.includedFolders.insert(folder.id);
+			}
+			if (folder.excluded->checked()) {
+				updated.excludedFolders.insert(folder.id);
+			}
+		}
+		if (!updated.paused && updated.onlyFolders && updated.includedFolders.empty()) {
+			error->setText(u"Выберите хотя бы одну папку для фильтрации."_q);
+			return;
+		}
+		AyuState::setRepostFilter(session, std::move(updated));
+		box->closeBox();
+	};
+	box->addButton(tr::lng_settings_save(), save);
+	box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
+	QObject::connect(percent, &Ui::NumberInput::submitted, box, [=] {
+		days->setFocusFast();
+	});
+	QObject::connect(days, &Ui::NumberInput::submitted, box, save);
+}
 
 Fn<void()> ClearDeletedMessagesHandler(not_null<Window::SessionController*> controller, not_null<PeerData*> peer, ID topicId) {
 	return [=] {
@@ -268,7 +462,9 @@ void AddAyuGramActions(PeerData *peerData,
 		peerData->id);
 	const auto allHiddenToggleShown = AyuState::allHiddenMessagesShown(session);
 	const auto hasAnyHidden = AyuState::hasAnyHiddenMessagesAll(session);
-	if (!showFilters && !saveDeletedMessages && !hiddenToggleShown && !allHiddenToggleShown && !hasAnyHidden) {
+	if (!peerData->isBroadcast()
+		&& !showFilters && !saveDeletedMessages
+		&& !hiddenToggleShown && !allHiddenToggleShown && !hasAnyHidden) {
 		return;
 	}
 
@@ -281,6 +477,101 @@ void AddAyuGramActions(PeerData *peerData,
 		.icon = &st::menuIconGroupReactions,
 		.fillSubmenu = [=](not_null<Ui::PopupMenu*> menu) {
 			const auto addAction = Ui::Menu::CreateAddActionCallback(menu);
+			if (peerData->isBroadcast()) {
+				const auto enabled = AyuState::repostFilterEnabled(session, peerData->id);
+				const auto filter = AyuState::repostFilter(session);
+				const auto enabledAnywhere = filter.enabledAll
+					|| !filter.includedFolders.empty()
+					|| std::any_of(filter.channels.begin(), filter.channels.end(), [](const auto &entry) {
+						return entry.second;
+					});
+				const auto history = session->data().historyLoaded(peerData->id);
+				const auto excludedByFolder = history && ranges::any_of(
+					session->data().chatsFilters().list(),
+					[&](const Data::ChatFilter &folder) {
+						return filter.excludedFolders.contains(folder.id()) && folder.contains(history);
+					});
+				if (!filter.paused && (enabled || (!filter.onlyFolders && !excludedByFolder))) {
+					addAction(
+						enabled
+							? u"Выключить фильтрацию (Этот канал)"_q
+							: u"Включить фильтрацию (Этот канал)"_q,
+						[=] {
+							auto updated = AyuState::repostFilter(session);
+							updated.channels[peerData->id] = !enabled;
+							AyuState::setRepostFilter(session, std::move(updated));
+						},
+						&st::menuIconCaptionHide);
+				}
+				if (enabledAnywhere || filter.paused) {
+					addAction(
+						filter.paused
+							? u"Включить настроенную фильтрацию"_q
+							: u"Выключить настроенную фильтрацию"_q,
+						[=] {
+							auto updated = AyuState::repostFilter(session);
+							updated.paused = !filter.paused;
+							AyuState::setRepostFilter(session, std::move(updated));
+						},
+						filter.paused ? &st::menuIconCaptionHide : &st::menuIconCaptionShow);
+				}
+				addAction(
+					filter.enabledAll
+						? u"Отключить режим всех каналов"_q
+						: u"Фильтровать все каналы"_q,
+					[=] {
+						auto updated = AyuState::repostFilter(session);
+						updated.enabledAll = !filter.enabledAll;
+						if (updated.enabledAll) {
+							updated.onlyFolders = false;
+							updated.paused = false;
+						}
+						AyuState::setRepostFilter(session, std::move(updated));
+					},
+					&st::menuIconCaptionHide);
+				const auto exception = filter.channels.find(peerData->id);
+				const auto excluded = exception != filter.channels.end() && !exception->second;
+				addAction(
+					excluded ? u"Убрать канал из исключений"_q : u"Добавить канал в исключения"_q,
+					[=] {
+						auto updated = AyuState::repostFilter(session);
+						if (excluded) {
+							updated.channels.erase(peerData->id);
+						} else {
+							updated.channels[peerData->id] = false;
+						}
+						AyuState::setRepostFilter(session, std::move(updated));
+					},
+					&st::menuIconCaptionShow);
+				addAction(
+					u"Исключения: каналы"_q,
+					[=] {
+						sessionController->show(Box<PeerListBox>(
+							std::make_unique<RepostExceptionsController>(session),
+							[=](not_null<PeerListBox*> box) {
+								box->setTitle(rpl::single(u"Исключённые каналы"_q));
+								box->addButton(tr::lng_settings_save(), [=] {
+									auto updated = AyuState::repostFilter(session);
+									std::erase_if(updated.channels, [](const auto &entry) {
+										return !entry.second;
+									});
+									for (const auto peer : box->collectSelectedRows()) {
+										updated.channels[peer->id] = false;
+									}
+									AyuState::setRepostFilter(session, std::move(updated));
+									box->closeBox();
+								});
+								box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
+							}));
+					},
+					&st::menuIconCaptionShow);
+				addAction(
+					u"Настройки фильтрации (%1%, %2 дн.)"_q.arg(filter.percent).arg(filter.days),
+					[=] {
+						sessionController->show(Box(RepostFilterSettingsBox, session));
+					},
+					&st::menuIconSettings);
+			}
 			if (showFilters) {
 				addAction(
 					tr::ayu_ViewFiltersMenuText(tr::now),

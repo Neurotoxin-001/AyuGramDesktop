@@ -186,6 +186,7 @@ History::History(not_null<Data::Session*> owner, PeerId peerId)
 	updateCommunityRegistration();
 	rpl::merge(
 		FiltersCacheController::updates(),
+		owner->chatsFilters().changed(),
 		AyuSettings::getInstance().filtersEnabledChanges() | rpl::to_empty,
 		AyuSettings::getInstance().filtersEnabledInChatsChanges() | rpl::to_empty,
 		AyuSettings::getInstance().hideFromBlockedChanges() | rpl::to_empty,

@@ -50,6 +50,22 @@ void showAllHiddenMessages(not_null<Main::Session*> session, bool show);
 std::optional<bool> allHiddenMessagesShown(
 	not_null<Main::Session*> session);
 
+struct RepostFilter {
+	bool paused = false;
+	bool enabledAll = false;
+	std::unordered_map<PeerId, bool> channels;
+	bool onlyFolders = false;
+	std::unordered_set<FilterId> includedFolders;
+	std::unordered_set<FilterId> excludedFolders;
+	int percent = 2;
+	int days = 7;
+};
+
+RepostFilter repostFilter(not_null<Main::Session*> session);
+bool repostFilterEnabled(not_null<Main::Session*> session, PeerId peerId);
+void setRepostFilter(not_null<Main::Session*> session, RepostFilter filter);
+bool isRepostFiltered(not_null<HistoryItem*> item);
+
 void load();
 void migrateLegacy();
 

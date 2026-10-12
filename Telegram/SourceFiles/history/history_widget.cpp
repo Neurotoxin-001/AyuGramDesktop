@@ -220,6 +220,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ayu_settings.h"
 #include "ayu/ayu_state.h"
+#include "base/timer_rpl.h"
 #include "ayu/features/filters/filters_cache_controller.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "ayu/features/message_shot/message_shot.h"
@@ -809,6 +810,15 @@ HistoryWidget::HistoryWidget(
 			Data::PeerUpdate::Flag::IsBlocked
 		) | rpl::to_empty,
 		FiltersCacheController::updates(),
+		base::timer_each(60 * crl::time(1000)) | rpl::filter([=] {
+			return isVisible()
+				&& _history
+				&& _history->peer->isBroadcast()
+				&& AyuState::repostFilterEnabled(
+					&session(),
+					_history->peer->id);
+		}),
+		session().data().chatsFilters().changed(),
 		AyuSettings::getInstance().showHideButtonNearPostsChanges(
 		) | rpl::to_empty
 	) | rpl::on_next(

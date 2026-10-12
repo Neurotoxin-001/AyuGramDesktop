@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history_item.h"
 
+#include "ayu/ayu_state.h"
+#include "ayu/features/filters/filters_cache_controller.h"
+
 #include "api/api_premium.h"
 #include "api/api_sensitive_content.h"
 #include "api/api_transcribes.h"
@@ -4081,7 +4084,11 @@ bool HistoryItem::changeViewsCount(int count) {
 		return false;
 	}
 
+	const auto wasFiltered = AyuState::isRepostFiltered(this);
 	views->views.count = count;
+	if (wasFiltered != AyuState::isRepostFiltered(this)) {
+		FiltersCacheController::fireUpdate();
+	}
 	return true;
 }
 
@@ -4093,7 +4100,11 @@ bool HistoryItem::changeForwardsCount(int count) {
 		return false;
 	}
 
+	const auto wasFiltered = AyuState::isRepostFiltered(this);
 	views->forwardsCount = count;
+	if (wasFiltered != AyuState::isRepostFiltered(this)) {
+		FiltersCacheController::fireUpdate();
+	}
 	return true;
 }
 
