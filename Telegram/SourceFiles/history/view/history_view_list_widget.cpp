@@ -434,6 +434,9 @@ void ListWidget::enumerateDates(Method method) {
 	auto lowestInOneDayItemBottom = -1;
 
 	auto dateCallback = [&](not_null<Element*> view, int itemtop, int itembottom) {
+		if (view->isHidden()) {
+			return true;
+		}
 		const auto item = view->data();
 		if (lowestInOneDayItemBottom < 0 && view->isInOneDayWithPrevious()) {
 			lowestInOneDayItemBottom = itembottom - view->marginBottom();
@@ -5689,28 +5692,30 @@ void ListWidget::refreshAttachmentsFromTill(int from, int till) {
 		}
 		return nullptr;
 	};
-	auto view = _items[from].get();
-	view->refreshForumThreadBar(previousShown(), showBars);
-	for (auto i = from + 1; i != till; ++i) {
-		const auto next = _items[i].get();
-		if (next->isHidden()) {
-			next->refreshForumThreadBar(nullptr, showBars);
-			next->setDisplayDate(false);
-		} else {
-			next->refreshForumThreadBar(view, showBars);
-			const auto viewDate = view->dateTime();
-			const auto nextDate = next->dateTime();
-			next->setDisplayDate(!hidesDates
-				&& (nextDate.date() != viewDate.date()
-					|| view->data()->hideDisplayDate()));
-			auto attached = next->computeIsAttachToPrevious(view);
-			next->setAttachToPrevious(attached, view);
-			view->setAttachToNext(attached, next);
-			view = next;
+	auto previous = previousShown();
+	for (auto i = from; i != till; ++i) {
+		const auto view = _items[i].get();
+		if (view->isHidden()) {
+			view->refreshForumThreadBar(nullptr, showBars);
+			view->setDisplayDate(false);
+			view->setAttachToPrevious(false);
+			view->setAttachToNext(false);
+			continue;
 		}
+		view->refreshForumThreadBar(previous, showBars);
+		view->setDisplayDate(!hidesDates
+			&& (!previous
+				|| view->dateTime().date() != previous->dateTime().date()
+				|| previous->data()->hideDisplayDate()));
+		const auto attached = previous && view->computeIsAttachToPrevious(previous);
+		view->setAttachToPrevious(attached, previous);
+		if (previous) {
+			previous->setAttachToNext(attached, view);
+		}
+		previous = view;
 	}
-	if (till == int(_items.size())) {
-		_items.back()->setAttachToNext(false);
+	if (till == int(_items.size()) && previous) {
+		previous->setAttachToNext(false);
 	}
 }
 

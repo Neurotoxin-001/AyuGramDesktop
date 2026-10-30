@@ -1187,6 +1187,9 @@ void HistoryInner::enumerateDates(Method method) {
 	auto lowestInOneDayItemBottom = -1;
 
 	auto dateCallback = [&](not_null<Element*> view, int itemtop, int itembottom) {
+		if (view->isHidden()) {
+			return true;
+		}
 		const auto item = view->data();
 		if (lowestInOneDayItemBottom < 0 && view->isInOneDayWithPrevious()) {
 			lowestInOneDayItemBottom = itembottom - view->marginBottom();
