@@ -795,6 +795,7 @@ protected:
 	[[nodiscard]] int textRealWidth() const { return _textRealWidth; }
 	void validateText();
 	void invalidateTextSizeCache();
+	void refreshVisibilityLayout();
 	void validateTextSkipBlock(bool has, int width, int height);
 	void validateInlineKeyboard(HistoryMessageReplyMarkup *markup);
 
@@ -860,6 +861,7 @@ private:
 	mutable uint32 _textRealWidth : 16 = 0;
 	mutable int _textHeight = 0;
 
+	bool _hiddenForLayout = false;
 	int _y = 0;
 	int _indexInBlock = -1;
 

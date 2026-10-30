@@ -246,6 +246,31 @@ constexpr auto kCommonModifiers = 0
 	| Qt::ControlModifier;
 const auto kPsaAboutPrefix = "cloud_lng_about_psa_";
 
+void RefreshHiddenMessageLayout(History *history) {
+	if (!history) {
+		return;
+	}
+	auto lastShown = static_cast<HistoryView::Element*>(nullptr);
+	for (const auto &block : history->blocks) {
+		for (const auto &view : block->messages) {
+			view->setPendingResize();
+			if (view->isHidden()) {
+				view->setDisplayDate(false);
+				view->refreshForumThreadBar(nullptr, false);
+				view->setAttachToPrevious(false);
+				view->setAttachToNext(false);
+			} else {
+				view->previousInBlocksChanged();
+				lastShown = view.get();
+			}
+		}
+	}
+	if (lastShown) {
+		lastShown->nextInBlocksRemoved();
+	}
+	history->forceFullResize();
+}
+
 [[nodiscard]] rpl::producer<PeerData*> ActivePeerValue(
 		not_null<Window::SessionController*> controller) {
 	return controller->activeChatValue(
@@ -815,28 +840,10 @@ HistoryWidget::HistoryWidget(
 				this,
 				[=]
 				{
-					if (_history) {
-						_history->forceFullResize();
-						if (_migrated) {
-							_migrated->forceFullResize();
-						}
-						updateHistoryGeometry();
-						update();
-
-						for (const auto &item : _history->blocks) {
-							if (!item) {
-								continue;
-							}
-							for (const auto &msg : item->messages) {
-								if (!msg) {
-									continue;
-								}
-
-								_history->owner().requestViewResize(msg.get());
-								_history->owner().requestItemViewRefresh(msg->data());
-							}
-						}
-					}
+					RefreshHiddenMessageLayout(_history);
+					RefreshHiddenMessageLayout(_migrated);
+					updateHistoryGeometry();
+					update();
 				});
 		},
 		lifetime());

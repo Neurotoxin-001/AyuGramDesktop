@@ -2554,7 +2554,7 @@ int Element::displayedDateHeight() const {
 }
 
 bool Element::displayDate() const {
-	return Has<DateBadge>();
+	return !isHidden() && Has<DateBadge>();
 }
 
 bool Element::isInOneDayWithPrevious() const {
@@ -2707,11 +2707,13 @@ void Element::recountDisplayDateInBlocks() {
 }
 
 QSize Element::countOptimalSize() {
+	refreshVisibilityLayout();
 	_flags &= ~Flag::NeedsResize;
 	return performCountOptimalSize();
 }
 
 QSize Element::countCurrentSize(int newWidth) {
+	refreshVisibilityLayout();
 	if (_flags & Flag::NeedsResize) {
 		initDimensions();
 	}
@@ -3121,6 +3123,20 @@ void Element::blockquoteExpandChanged() {
 	history()->owner().requestViewResize(this);
 }
 
+void Element::refreshVisibilityLayout() {
+	const auto hidden = isHidden();
+	if (_hiddenForLayout == hidden) {
+		return;
+	}
+	_hiddenForLayout = hidden;
+	invalidateTextSizeCache();
+	if (_media) {
+		_media->parentTextUpdated();
+	}
+	// The current layout pass will consume this invalidation.
+	_flags |= Flag::NeedsResize;
+}
+
 void Element::invalidateTextSizeCache() {
 	_textWidth = 0;
 	_textHeight = 0;
@@ -3209,7 +3225,7 @@ Element *Element::previousInBlocks() const {
 
 Element *Element::previousDisplayedInBlocks() const {
 	auto result = previousInBlocks();
-	while (result && ((result->data()->isEmpty() || result->isHidden()) && !isMessageHidden(data()))) {
+	while (result && (result->data()->isEmpty() || result->isHidden())) {
 		result = result->previousInBlocks();
 	}
 	return result == this ? nullptr : result;
@@ -3230,7 +3246,7 @@ Element *Element::nextInBlocks() const {
 
 Element *Element::nextDisplayedInBlocks() const {
 	auto result = nextInBlocks();
-	while (result && ((result->data()->isEmpty() || result->isHidden()) && !isMessageHidden(data()))) {
+	while (result && (result->data()->isEmpty() || result->isHidden())) {
 		result = result->nextInBlocks();
 	}
 	return result == this ? nullptr : result;
