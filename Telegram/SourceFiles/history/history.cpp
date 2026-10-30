@@ -88,6 +88,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/ayu_state.h"
 #include "ayu/features/filters/filters_cache_controller.h"
 #include "ayu/features/filters/filters_controller.h"
+#include "ayu/utils/telegram_helpers.h"
 
 
 namespace {
@@ -2948,6 +2949,25 @@ void History::resolveChatListMessageGroup() {
 
 HistoryItem *History::chatListMessage() const {
 	return _chatListMessage.value_or(nullptr);
+}
+
+HistoryItem *History::chatListDisplayMessage() const {
+	const auto result = chatListMessage();
+	if (!result || !isMessageHidden(result)) {
+		return result;
+	}
+	for (auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+		const auto &block = *it;
+		for (auto i = block->messages.rbegin(); i != block->messages.rend(); ++i) {
+			const auto item = (*i)->data();
+			if (item->id < result->id
+				&& !isMessageHidden(item)
+				&& item->isRegular()) {
+				return item;
+			}
+		}
+	}
+	return result;
 }
 
 bool History::chatListMessageKnown() const {
